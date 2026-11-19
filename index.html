@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Fruit Catch</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #0d0d1a; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; color: white; }
+
+        @keyframes rainbowGlow {
+            0% { box-shadow: 0 0 20px #ff0000; border-color: #ff0000; }
+            25% { box-shadow: 0 0 20px #ffff00; border-color: #ffff00; }
+            50% { box-shadow: 0 0 20px #00ff00; border-color: #00ff00; }
+            75% { box-shadow: 0 0 20px #00ffff; border-color: #00ffff; }
+            100% { box-shadow: 0 0 20px #ff0000; border-color: #ff0000; }
+        }
+
+        canvas { border: 3px solid; animation: rainbowGlow 4s linear infinite; cursor: none; }
+
+        #ui { position: absolute; top: 20px; left: 20px; font-size: 20px; pointer-events: none; }
+
+        #character-select { position: absolute; top: 20px; right: 20px; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
+        .char-btn { background: #333; color: white; border: 1px solid #555; padding: 5px 10px; cursor: pointer; border-radius: 5px; transition: 0.2s; }
+        .char-btn:hover { background: #555; }
+        .char-btn.active { background: #00ffcc; color: black; font-weight: bold; }
+        #color-row { display: none; align-items: center; gap: 8px; justify-content: center; margin-top: 5px; }
+        #color-picker { width: 40px; height: 28px; border: none; background: none; cursor: pointer; }
+
+        #game-over { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; display: none; background: rgba(0,0,0,0.85); padding: 30px; border-radius: 15px; border: 2px solid #ff0000; }
+        #restart-btn { margin-top: 15px; padding: 10px 20px; font-size: 18px; cursor: pointer; background: #ff0000; color: white; border: none; border-radius: 5px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">Level: <span id="level">1</span> | Score: <span id="score">0</span> | Lives: <span id="lives">3</span></div>
+
+    <div id="character-select">
+        <div style="margin-bottom:5px; text-align:center;">Catcher Style:</div>
+        <button class="char-btn active" onclick="setStyle('zebra', this)">🦓 Zebra</button>
+        <button class="char-btn" onclick="setStyle('dog', this)">🐶 Dog</button>
+        <button class="char-btn" onclick="setStyle('cat', this)">🐱 Cat</button>
+        <button class="char-btn" onclick="setStyle('color', this)">🎨 Colour</button>
+        <div id="color-row">
+            <span>Pick:</span>
+            <input type="color" id="color-picker" value="#00ffff">
+        </div>
+    </div>
+
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+
+    <div id="game-over">
+        <h1 style="color: #ff0000; margin:0;">GAME OVER</h1>
+        <p style="font-size: 20px;">Final Score: <span id="final-score">0</span></p>
+        <button id="restart-btn" onclick="restartGame()">Play Again</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Catch bar
+        let player = { x: 150, y: 550, w: 100, h: 20, speed: 7 };
+        let style = 'zebra';
+        let barColor = '#00ffff';
+
+        const styleEmoji = { zebra: '🦓', dog: '🐶', cat: '🐱', color: '' };
+        const barColors = { dog: '#c68642', cat: '#ff9ecb' };
+
+        let items = [];
+        let keys = { ArrowLeft: false, ArrowRight: false };
+        let score = 0;
+        let level = 1;
+        let lives = 3;
+        let gameOver = false;
+        let animationId;
+        let frame = 0;
+        let hitFlash = 0; // frames left to flash red after catching a bomb
+
+        const MAX_LEVEL = 10;
+        const MAX_ON_SCREEN = 3;   // max items (fruit + bombs) at once
+        const MAX_BOMBS = 1;       // max bombs at once
+        const BOMB_CHANCE = 0.25;  // 25% of spawns are bombs
+
+        const fruits = ['🍎', '🍌', '🍓', '🍊', '🍉', '🍐', '🍒'];
+        const bomb = '💣';
+
+        // Speed goes up every level
+        function getSpeed() { return 1.5 + (level - 1) * 0.7; }
+        // Time between spawns (in frames)
+        function getSpawnInterval() { return Math.max(110 - level * 6, 60); }
+
+        // --- Controls ---
+        window.addEventListener('keydown', (e) => { if (e.key in keys) keys[e.key] = true; });
+        window.addEventListener('keyup', (e) => { if (e.key in keys) keys[e.key] = false; });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            player.x = mouseX - player.w / 2;
+            if (player.x < 0) player.x = 0;
+            if (player.x > canvas.width - player.w) player.x = canvas.width - player.w;
+        });
+
+        // --- Customization ---
+        function setStyle(newStyle, btn) {
+            style = newStyle;
+            document.querySelectorAll('.char-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById('color-row').style.display = newStyle === 'color' ? 'flex' : 'none';
+        }
+
+        document.getElementById('color-picker').addEventListener('input', (e) => {
+            barColor = e.target.value;
+        });
+
+        // --- Game logic ---
+        function spawnItem() {
+            if (items.length >= MAX_ON_SCREEN) return;
+
+            const bombsOnScreen = items.filter(i => i.type === 'bomb').length;
+            const isBomb = Math.random() < BOMB_CHANCE && bombsOnScreen < MAX_BOMBS;
+
+            items.push({
+                x: Math.random() * (canvas.width - 40),
+                y: -40,
+                w: 40,
+                h: 40,
+                speed: getSpeed(),
+                type: isBomb ? 'bomb' : 'fruit',
+                emoji: isBomb ? bomb : fruits[Math.floor(Math.random() * fruits.length)]
+            });
+        }
+
+        function loseLife() {
+            lives--;
+            if (lives <= 0) endGame();
+        }
+
+        function update() {
+            if (gameOver) return;
+
+            if (keys.ArrowLeft && player.x > 0) player.x -= player.speed;
+            if (keys.ArrowRight && player.x < canvas.width - player.w) player.x += player.speed;
+
+            frame++;
+            if (frame % getSpawnInterval() === 0) spawnItem();
+            if (hitFlash > 0) hitFlash--;
+
+            for (let i = items.length - 1; i >= 0; i--) {
+                let item = items[i];
+                item.y += item.speed;
+
+                // Caught
+                if (item.x < player.x + player.w && item.x + item.w > player.x &&
+                    item.y < player.y + player.h && item.y + item.h > player.y) {
+                    items.splice(i, 1);
+
+                    if (item.type === 'bomb') {
+                        hitFlash = 20;
+                        loseLife();
+                    } else {
+                        score += 10;
+                        if (score >= level * 100 && level < MAX_LEVEL) level++;
+                    }
+                    continue;
+                }
+
+                // Fell off the bottom
+                if (item.y > canvas.height) {
+                    items.splice(i, 1);
+                    // Missing a fruit costs a life; missing a bomb is good
+                    if (item.type === 'fruit') loseLife();
+                }
+            }
+
+            document.getElementById('level').innerText = level;
+            document.getElementById('score').innerText = score;
+            document.getElementById('lives').innerText = lives;
+        }
+
+        function drawBar() {
+            ctx.save();
+            ctx.shadowBlur = 15;
+
+            if (hitFlash > 0) {
+                // Flash red when a bomb is caught
+                ctx.shadowColor = '#ff0000';
+                ctx.fillStyle = '#ff0000';
+                ctx.fillRect(player.x, player.y, player.w, player.h);
+            } else if (style === 'zebra') {
+                ctx.shadowColor = '#ffffff';
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(player.x, player.y, player.w, player.h);
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = '#000000';
+                for (let sx = 0; sx < player.w; sx += 20) {
+                    ctx.fillRect(player.x + sx + 10, player.y, 10, player.h);
+                }
+            } else {
+                const color = style === 'color' ? barColor : barColors[style];
+                ctx.shadowColor = color;
+                ctx.fillStyle = color;
+                ctx.fillRect(player.x, player.y, player.w, player.h);
+            }
+            ctx.restore();
+
+            if (styleEmoji[style]) {
+                ctx.font = '30px Arial';
+                ctx.fillText(styleEmoji[style], player.x + player.w / 2, player.y - 15);
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            drawBar();
+
+            ctx.font = '35px Arial';
+            items.forEach(item => {
+                ctx.fillText(item.emoji, item.x + item.w / 2, item.y + item.h / 2);
+            });
+        }
+
+        function gameLoop() {
+            if (!gameOver) {
+                update();
+                draw();
+                animationId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        function endGame() {
+            gameOver = true;
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('game-over').style.display = 'block';
+        }
+
+        function restartGame() {
+            score = 0;
+            level = 1;
+            lives = 3;
+            items = [];
+            frame = 0;
+            hitFlash = 0;
+            gameOver = false;
+            player.x = 150;
+            document.getElementById('game-over').style.display = 'none';
+            cancelAnimationFrame(animationId);
+            gameLoop();
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
